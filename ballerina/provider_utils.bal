@@ -17,6 +17,7 @@
 import ballerina/ai;
 import ballerina/ai.observe;
 import ballerina/constraint;
+import ballerina/http;
 import ballerina/lang.array;
 import ballerinax/mistral;
 
@@ -334,3 +335,6 @@ isolated function generateLlmResponse(mistral:Client llmClient, int maxTokens, M
         return err;
     }
 }
+
+isolated function getHttpClientConfig(string apiKey, ConnectionConfig connectionConfig)
+        returns http:ClientConfiguration => {...connectionConfig, auth: {token: apiKey}};
