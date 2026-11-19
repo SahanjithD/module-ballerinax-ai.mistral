@@ -68,7 +68,7 @@ service /mistral on new http:Listener(EMBEDDING_SERVICE_PORT) {
     resource function post embeddings(http:Request req) returns http:Response|error {
         json payload = check req.getJsonPayload();
         map<string> headers = {};
-        foreach string name in ["Authorization", "Content-Type", "Accept"] {
+        foreach string name in ["Authorization", "Content-Type", "Accept", "Forwarded", "X-Forwarded-For", "Accept-Encoding"] {
             string|http:HeaderNotFoundError value = req.getHeader(name);
             if value is string {
                 headers[name] = value;
@@ -77,6 +77,8 @@ service /mistral on new http:Listener(EMBEDDING_SERVICE_PORT) {
         lock {
             lastEmbeddingRequest = payload.clone();
         }
+        headers["method"] = req.method;
+        headers["path"] = req.rawPath;
         lock {
             lastRequestHeaders = headers.clone();
         }
@@ -92,7 +94,9 @@ service /mistral on new http:Listener(EMBEDDING_SERVICE_PORT) {
             int statusCode = check int:fromString(firstInput.substring(STATUS_PREFIX.length(),
                     STATUS_PREFIX.length() + 3));
             res.statusCode = statusCode;
-            if statusCode == 422 {
+            if firstInput.includes("HTML") {
+                res.setTextPayload("<html><body>Bad Gateway</body></html>", "text/html");
+            } else if statusCode == 422 {
                 res.setJsonPayload({
                     detail: [
                         {
@@ -198,29 +202,41 @@ isolated function getMalformedResponse(string kind, string[] inputs) returns jso
             return {data};
         }
         "MISSING_EMBEDDING" => {
-            return {data: from int i in 0 ..< inputs.length()
-                    select {index: i}};
+            return {
+                data: from int i in 0 ..< inputs.length()
+                    select {index: i}
+            };
         }
         "STRING_EMBEDDING" => {
-            return {data: from int i in 0 ..< inputs.length()
-                    select {embedding: "AAAAAA==", index: i}};
+            return {
+                data: from int i in 0 ..< inputs.length()
+                    select {embedding: "AAAAAA==", index: i}
+            };
         }
         "DUPLICATE_INDEX" => {
             int count = int:max(inputs.length(), 2);
-            return {data: from int i in 0 ..< count
-                    select {embedding: [0.1], index: 0}};
+            return {
+                data: from int i in 0 ..< count
+                    select {embedding: [0.1], index: 0}
+            };
         }
         "OUT_OF_RANGE_INDEX" => {
-            return {data: from int i in 0 ..< inputs.length()
-                    select {embedding: [0.1], index: i + 1}};
+            return {
+                data: from int i in 0 ..< inputs.length()
+                    select {embedding: [0.1], index: i + 1}
+            };
         }
         "NEGATIVE_INDEX" => {
-            return {data: from int i in 0 ..< inputs.length()
-                    select {embedding: [0.1], index: -1}};
+            return {
+                data: from int i in 0 ..< inputs.length()
+                    select {embedding: [0.1], index: -1}
+            };
         }
         "NO_INDEX" => {
-            return {data: from int i in 0 ..< inputs.length()
-                    select {embedding: [<float>i]}};
+            return {
+                data: from int i in 0 ..< inputs.length()
+                    select {embedding: [<float>i]}
+            };
         }
         "NO_USAGE_EXTRA_KEYS" => {
             return {
@@ -232,8 +248,10 @@ isolated function getMalformedResponse(string kind, string[] inputs) returns jso
             };
         }
         "NO_USAGE" => {
-            return {data: from int i in 0 ..< inputs.length()
-                    select {embedding: [0.5, -0.5], index: i}};
+            return {
+                data: from int i in 0 ..< inputs.length()
+                    select {embedding: [0.5, -0.5], index: i}
+            };
         }
         "INT8_VALUES" => {
             return {data: [{embedding: [-128, 0, 127], index: 0}]};

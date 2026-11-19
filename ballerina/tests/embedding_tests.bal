@@ -41,6 +41,8 @@ function testEmbedRequestShape() returns error? {
     test:assertEquals(getLastRequestHeader("Accept"), "application/json");
     string? contentType = getLastRequestHeader("Content-Type");
     test:assertTrue(contentType is string && contentType.startsWith("application/json"));
+    test:assertEquals(getLastRequestHeader("method"), "POST");
+    test:assertEquals(getLastRequestHeader("path"), "/mistral/embeddings");
     test:assertEquals(getEmbeddingRequestCount(), 1);
     assertVector(embedding, 1024, getMockFloatValue(0, 0));
 }
@@ -67,19 +69,11 @@ function testEmbedWithCustomApiKey() returns error? {
 }
 
 @test:Config
-function testEmbedWithEmptyApiKey() {
-    EmbeddingProvider|ai:Error provider = new ("", MISTRAL_EMBED, EMBEDDING_SERVICE_URL);
-    if provider is ai:Error {
-        return;
-    }
-    ai:Embedding|ai:Error embedding = provider->embed(<ai:TextChunk>{content: "Hello"});
-    if embedding is ai:Error {
-        test:assertTrue(embedding is ai:LlmConnectionError);
-        test:assertEquals(getEmbeddingRequestCount(), 0);
-        return;
-    }
+function testEmbedWithEmptyApiKey() returns error? {
+    EmbeddingProvider provider = check new ("", MISTRAL_EMBED, EMBEDDING_SERVICE_URL);
+    _ = check provider->embed(<ai:TextChunk>{content: "Hello"});
     string? authorization = getLastRequestHeader("Authorization");
-    test:assertTrue(authorization is () || authorization.trim() == "Bearer");
+    test:assertEquals(authorization is string ? authorization.trim() : (), "Bearer");
 }
 
 // modelType
@@ -112,18 +106,17 @@ function testServiceUrlWithTrailingSlash() returns error? {
     EmbeddingProvider provider = check new (EMBEDDING_API_KEY, MISTRAL_EMBED, EMBEDDING_SERVICE_URL + "/");
     ai:Embedding embedding = check provider->embed(<ai:TextChunk>{content: "Hello"});
     assertVector(embedding, 1024, getMockFloatValue(0, 0));
+    test:assertEquals(getLastRequestHeader("path"), "/mistral/embeddings");
     test:assertEquals(getEmbeddingRequestCount(), 1);
 }
 
 @test:Config {dataProvider: invalidServiceUrls}
 function testInvalidServiceUrl(string serviceUrl) {
     EmbeddingProvider|ai:Error provider = new (EMBEDDING_API_KEY, MISTRAL_EMBED, serviceUrl);
-    if provider is ai:Error {
-        test:assertEquals(provider.message(), "Failed to initialize Mistral embedding provider");
-        return;
+    if provider !is ai:Error {
+        test:assertFail("Expected an initialization error for service URL: " + serviceUrl);
     }
-    ai:Embedding|ai:Error embedding = provider->embed(<ai:TextChunk>{content: "Hello"});
-    test:assertTrue(embedding is ai:LlmConnectionError);
+    test:assertEquals(provider.message(), "Failed to initialize Mistral embedding provider");
 }
 
 function invalidServiceUrls() returns string[][] => [
@@ -271,7 +264,7 @@ function testCartesianProductCaseCount() {
     test:assertEquals(cartesianEmbeddingCases().length(), 96);
 }
 
-// Pairwise: operation x chunk type x HTTP version x outputDataType x outputDimension x service URL
+// Pairwise: operation x chunk type x HTTP version x outputDataType x outputDimension x service URL x modelType
 
 type PairwiseCase [string, string, http:HttpVersion, EmbeddingDataType?, int?, string,
         MISTRAL_AI_EMBEDDING_MODEL_NAMES];
@@ -321,7 +314,11 @@ function pairwiseEmbeddingCases() returns PairwiseCase[] {
         ["embed", "chunk", http:HTTP_1_1, EMBEDDING_INT8, (), plain, MISTRAL_EMBED_2312],
         ["embed", "chunk", http:HTTP_1_1, EMBEDDING_INT8, 256, plain, CODESTRAL_EMBED_2505],
         ["embed", "chunk", http:HTTP_1_1, EMBEDDING_UINT8, 256, plain, MISTRAL_EMBED],
-        ["embed", "chunk", http:HTTP_1_1, EMBEDDING_UINT8, 3072, plain, CODESTRAL_EMBED]
+        ["embed", "chunk", http:HTTP_1_1, EMBEDDING_UINT8, 3072, plain, CODESTRAL_EMBED],
+        ["batch", "chunk", http:HTTP_1_1, (), 3072, plain, MISTRAL_EMBED_2312],
+        ["embed", "chunk", http:HTTP_2_0, (), (), plain, CODESTRAL_EMBED],
+        ["batch", "chunk", http:HTTP_1_1, (), (), slash, MISTRAL_EMBED],
+        ["embed", "chunk", http:HTTP_1_1, (), 3072, plain, CODESTRAL_EMBED_2505]
     ];
 }
 
@@ -424,7 +421,7 @@ function testResponseLimitExceeded() returns error? {
         httpVersion = http:HTTP_1_1, timeout = 5, responseLimits = {maxEntityBodySize: 100}
     );
     ai:Embedding|ai:Error embedding = provider->embed(<ai:TextChunk>{content: "Hello"});
-    test:assertTrue(embedding is ai:LlmError);
+    test:assertTrue(embedding is ai:LlmConnectionError);
 }
 
 @test:Config
@@ -442,14 +439,94 @@ function testSecureSocketConfigIsApplied() {
     EmbeddingProvider|ai:Error provider = new (EMBEDDING_API_KEY, MISTRAL_EMBED, "https://localhost:8095/mistral",
         secureSocket = {cert: "tests/resources/missing-cert.pem"}
     );
-    if provider is ai:Error {
-        test:assertEquals(provider.message(), "Failed to initialize Mistral embedding provider");
-        return;
+    if provider !is ai:Error {
+        test:assertFail("Expected an initialization error for a missing certificate");
     }
+    test:assertEquals(provider.message(), "Failed to initialize Mistral embedding provider");
+}
+
+@test:Config
+function testForwardedHeaderIsSent() returns error? {
+    EmbeddingProvider provider = check new (EMBEDDING_API_KEY, MISTRAL_EMBED, EMBEDDING_SERVICE_URL,
+        forwarded = "enable"
+    );
+    _ = check provider->embed(<ai:TextChunk>{content: "Hello"});
+    string? forwarded = getLastRequestHeader("Forwarded");
+    test:assertTrue(forwarded is string && forwarded.startsWith("by="));
+    _ = check defaultEmbeddingProvider->embed(<ai:TextChunk>{content: "Hello"});
+    test:assertEquals(getLastRequestHeader("Forwarded"), ());
+}
+
+@test:Config
+function testCompressionHeader() returns error? {
+    EmbeddingProvider alwaysCompress = check new (EMBEDDING_API_KEY, MISTRAL_EMBED, EMBEDDING_SERVICE_URL,
+        compression = http:COMPRESSION_ALWAYS
+    );
+    _ = check alwaysCompress->embed(<ai:TextChunk>{content: "Hello"});
+    string? acceptEncoding = getLastRequestHeader("Accept-Encoding");
+    test:assertTrue(acceptEncoding is string && acceptEncoding.includes("gzip"));
+    EmbeddingProvider noCompression = check new (EMBEDDING_API_KEY, MISTRAL_EMBED, EMBEDDING_SERVICE_URL,
+        compression = http:COMPRESSION_NEVER
+    );
+    _ = check noCompression->embed(<ai:TextChunk>{content: "Hello"});
+    test:assertEquals(getLastRequestHeader("Accept-Encoding"), ());
+}
+
+@test:Config {dataProvider: invalidInitConnectionConfigs}
+function testInvalidConnectionConfigFailsInit(ConnectionConfig connectionConfig) {
+    EmbeddingProvider|ai:Error provider = new (EMBEDDING_API_KEY, MISTRAL_EMBED, EMBEDDING_SERVICE_URL, (), (),
+        connectionConfig
+    );
+    if provider !is ai:Error {
+        test:assertFail("Expected an initialization error");
+    }
+    test:assertEquals(provider.message(), "Failed to initialize Mistral embedding provider");
+    test:assertTrue(provider.cause() is error);
+}
+
+function invalidInitConnectionConfigs() returns map<[ConnectionConfig]> => {
+    "forwardedUnknown": [{forwarded: "unknown"}],
+    "circuitBreakerThresholdAboveOne": [{circuitBreaker: {failureThreshold: 1.5}}],
+    "circuitBreakerThresholdNegative": [{circuitBreaker: {failureThreshold: -0.5}}],
+    "responseLimitsNegativeHeaderSize": [{responseLimits: {maxHeaderSize: -1}}],
+    "cacheZeroCapacity": [{cache: {capacity: 0}}]
+};
+
+@test:Config {dataProvider: invalidCallConnectionConfigs}
+function testInvalidConnectionConfigFailsCall(ConnectionConfig connectionConfig) returns error? {
+    resetEmbeddingRequests();
+    EmbeddingProvider provider = check new (EMBEDDING_API_KEY, MISTRAL_EMBED, EMBEDDING_SERVICE_URL, (), (),
+        connectionConfig
+    );
     ai:Embedding|ai:Error embedding = provider->embed(<ai:TextChunk>{content: "Hello"});
     test:assertTrue(embedding is ai:LlmConnectionError);
-    test:assertEquals(getEmbeddingRequestCount(), 0);
+    if embedding is ai:Error {
+        test:assertEquals(embedding.message(), CONNECTION_ERROR);
+    }
 }
+
+// Each case uses its own connection pool so that broken connections are not reused by other tests.
+function invalidCallConnectionConfigs() returns map<[ConnectionConfig]> => {
+    "poolZeroActiveConnections": [{poolConfig: {maxActiveConnections: 0, waitTime: 1}}],
+    "retryNegativeCount": [{retryConfig: {count: -1}, poolConfig: {}}],
+    "http2ZeroWindowSize": [{http2Settings: {http2InitialWindowSize: 0}, poolConfig: {}}],
+    "responseLimitsZeroStatusLine": [{responseLimits: {maxStatusLineLength: 0}, poolConfig: {}}]
+};
+
+@test:Config {dataProvider: lenientConnectionConfigs}
+function testLenientConnectionConfigIsAccepted(ConnectionConfig connectionConfig) returns error? {
+    EmbeddingProvider provider = check new (EMBEDDING_API_KEY, MISTRAL_EMBED, EMBEDDING_SERVICE_URL, (), (),
+        connectionConfig
+    );
+    ai:Embedding embedding = check provider->embed(<ai:TextChunk>{content: "Hello"});
+    assertVector(embedding, 1024, getMockFloatValue(0, 0));
+}
+
+function lenientConnectionConfigs() returns map<[ConnectionConfig]> => {
+    "timeoutZero": [{timeout: 0}],
+    "timeoutNegative": [{timeout: -1}],
+    "poolNegativeActiveConnections": [{poolConfig: {maxActiveConnections: -5}}]
+};
 
 @test:Config
 function testCircuitBreakerOpensAfterFailures() returns error? {
@@ -609,6 +686,27 @@ function testBatchEmbedHttpError(int statusCode) {
 
 function httpErrorStatusCodes() returns int[][] =>
     [[400], [401], [402], [403], [404], [422], [429], [500], [502], [503], [504]];
+
+@test:Config {dataProvider: httpErrorStatusCodes}
+function testHttpErrorCauseSubtype(int statusCode) {
+    ai:Embedding|ai:Error embedding = defaultEmbeddingProvider->embed(
+        <ai:TextChunk>{content: STATUS_PREFIX + statusCode.toString()});
+    http:ApplicationResponseError cause = getHttpErrorCause(embedding);
+    if statusCode >= 500 {
+        test:assertTrue(cause is http:RemoteServerError);
+    } else {
+        test:assertTrue(cause is http:ClientRequestError);
+    }
+    test:assertEquals(cause.message(), string `Mistral AI embeddings request failed with status code ${statusCode}`);
+}
+
+@test:Config
+function testNonJsonErrorBodyIsAvailable() {
+    ai:Embedding|ai:Error embedding = defaultEmbeddingProvider->embed(<ai:TextChunk>{content: STATUS_PREFIX + "502 HTML"});
+    http:ApplicationResponseError cause = getHttpErrorCause(embedding);
+    test:assertEquals(cause.detail().statusCode, 502);
+    test:assertEquals(cause.detail().body, "<html><body>Bad Gateway</body></html>");
+}
 
 @test:Config
 function testValidationErrorDetailIsAvailable() returns error? {
