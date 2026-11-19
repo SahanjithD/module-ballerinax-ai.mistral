@@ -48,7 +48,8 @@ public distinct isolated client class EmbeddingProvider {
         if outputDimension is int && outputDimension < 1 {
             return error ai:Error(string `Invalid output dimension: ${outputDimension}. The value must be greater than 0.`);
         }
-        http:Client|error embeddingClient = new (serviceUrl, getHttpClientConfig(apiKey, connectionConfig));
+        string baseUrl = serviceUrl.endsWith("/") ? serviceUrl.substring(0, serviceUrl.length() - 1) : serviceUrl;
+        http:Client|error embeddingClient = new (baseUrl, getHttpClientConfig(apiKey, connectionConfig));
         if embeddingClient is error {
             return error ai:Error("Failed to initialize Mistral embedding provider", embeddingClient);
         }
@@ -124,14 +125,22 @@ public distinct isolated client class EmbeddingProvider {
             request.output_dtype = outputDataType;
         }
 
-        json|http:ClientError payload = self.embeddingClient->/embeddings.post(request, {"Accept": "application/json"});
-        if payload is http:PayloadBindingError {
-            return error ai:LlmInvalidResponseError("Invalid response received from the embedding model", payload);
+        http:Response|http:ClientError httpResponse = self.embeddingClient->/embeddings.post(request,
+            {"Accept": "application/json"}
+        );
+        if httpResponse is http:ClientError {
+            return error ai:LlmConnectionError("Error while connecting to the embedding model", httpResponse);
+        }
+        string|http:ClientError payload = httpResponse.getTextPayload();
+        int statusCode = httpResponse.statusCode;
+        if statusCode < 200 || statusCode > 299 {
+            return error ai:LlmConnectionError("Error while connecting to the embedding model",
+                getHttpResponseError(httpResponse, payload is string ? payload : ()));
         }
         if payload is http:ClientError {
-            return error ai:LlmConnectionError("Error while connecting to the embedding model", payload);
+            return error ai:LlmInvalidResponseError("Invalid response received from the embedding model", payload);
         }
-        EmbeddingResponse|error response = payload.fromJsonWithType();
+        EmbeddingResponse|error response = payload.fromJsonStringWithType();
         if response is error {
             return error ai:LlmInvalidResponseError("Invalid response received from the embedding model", response);
         }
@@ -146,6 +155,25 @@ public distinct isolated client class EmbeddingProvider {
         }
         return getOrderedEmbeddings(response.data, inputs.length());
     }
+}
+
+isolated function getHttpResponseError(http:Response response, string? payload) returns http:ApplicationResponseError {
+    map<string[]> headers = {};
+    foreach string name in response.getHeaderNames() {
+        string[]|http:HeaderNotFoundError values = response.getHeaders(name);
+        if values is string[] {
+            headers[name] = values;
+        }
+    }
+    json|error body = payload is string ? payload.fromJsonString() : ();
+    int statusCode = response.statusCode;
+    string message = string `Mistral AI embeddings request failed with status code ${statusCode}`;
+    if statusCode >= 500 {
+        return error http:RemoteServerError(message, statusCode = statusCode, headers = headers,
+            body = body is json ? body : payload);
+    }
+    return error http:ClientRequestError(message, statusCode = statusCode, headers = headers,
+        body = body is json ? body : payload);
 }
 
 isolated function getOrderedEmbeddings(EmbeddingData[] data, int expectedCount) returns ai:Embedding[]|ai:Error {
