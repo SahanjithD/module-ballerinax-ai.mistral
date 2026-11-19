@@ -34,7 +34,7 @@ public distinct isolated client class EmbeddingProvider {
     # + apiKey - The Mistral AI API key
     # + modelType - The Mistral AI embedding model name
     # + serviceUrl - The base URL of Mistral AI API endpoint
-    # + outputDimension - The number of dimensions of the output embeddings (e.g., up to 3072 for `codestral-embed`); uses the model default if not set
+    # + outputDimension - The number of dimensions of the output embeddings; uses the model default if not set
     # + outputDataType - The data type of the output embedding values; uses `float` if not set
     # + connectionConfig - Additional HTTP connection configuration
     # + return - `nil` on successful initialization; otherwise, returns an `ai:Error`
@@ -49,7 +49,7 @@ public distinct isolated client class EmbeddingProvider {
             return error ai:Error(string `Invalid output dimension: ${outputDimension}. The value must be greater than 0.`);
         }
         string baseUrl = serviceUrl.endsWith("/") ? serviceUrl.substring(0, serviceUrl.length() - 1) : serviceUrl;
-        http:Client|error embeddingClient = new (baseUrl, getHttpClientConfig(apiKey, connectionConfig));
+        http:Client|error embeddingClient = trap new (baseUrl, getHttpClientConfig(apiKey, connectionConfig));
         if embeddingClient is error {
             return error ai:Error("Failed to initialize Mistral embedding provider", embeddingClient);
         }
@@ -138,7 +138,7 @@ public distinct isolated client class EmbeddingProvider {
                 getHttpResponseError(httpResponse, payload is string ? payload : ()));
         }
         if payload is http:ClientError {
-            return error ai:LlmInvalidResponseError("Invalid response received from the embedding model", payload);
+            return error ai:LlmConnectionError("Error while connecting to the embedding model", payload);
         }
         EmbeddingResponse|error response = payload.fromJsonStringWithType();
         if response is error {
