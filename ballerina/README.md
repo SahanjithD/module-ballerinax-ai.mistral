@@ -91,7 +91,7 @@ ai:Embedding[] embeddings = check embeddingProvider->batchEmbed([
 | `serviceUrl` | `string` | `https://api.mistral.ai/v1` | The base URL of the Mistral AI API (e.g., `https://api.eu.mistral.ai/v1`) |
 | `outputDimension` | `int?` | `()` (model default) | Number of dimensions of the output embeddings; must be greater than 0 (`codestral-embed` supports up to 3072) |
 | `outputDataType` | `EmbeddingDataType?` | `()` (`float`) | `EMBEDDING_FLOAT`, `EMBEDDING_INT8` or `EMBEDDING_UINT8` |
-| `connectionConfig` | `ConnectionConfig` | `{}` | Additional HTTP connection configuration (timeout, retry, proxy, etc.) |
+| `connectionConfig` | `*ConnectionConfig` | HTTP/2, 60 s timeout | Additional HTTP connection configuration, passed as named arguments (e.g., `timeout = 30`) |
 
 ### Notes
 
@@ -100,5 +100,5 @@ ai:Embedding[] embeddings = check embeddingProvider->batchEmbed([
 - Model defaults: `mistral-embed` returns 1024 dimensions and `codestral-embed` returns 1536 dimensions.
 - Integer data types (`int8`, `uint8`) are returned as `float` values with the same numbers. Keep `outputDimension` and `outputDataType` consistent with the vector store you use.
 - The `binary`/`ubinary` data types, `encoding_format` and `metadata` request fields are not supported.
-- HTTP failures (e.g., 400, 401, 422, 429, 5xx) and timeouts return an `ai:LlmConnectionError`. Its cause is the underlying `http:ClientError`, which holds the status code, headers (e.g., `Retry-After`) and response body. Use `retryConfig` in the connection configuration to retry on status codes such as 429, 500, 502, 503 and 504.
+- HTTP failures (e.g., 400, 401, 422, 429, 5xx), timeouts and connection failures return an `ai:LlmConnectionError`. For HTTP status failures, its cause is an `http:ApplicationResponseError` (`http:ClientRequestError` for 4xx, `http:RemoteServerError` for 5xx) that holds the status code, headers (e.g., `Retry-After`) and response body. Use `retryConfig` in the connection configuration to retry on status codes such as 429, 500, 502, 503 and 504.
 - Invalid responses return an `ai:LlmInvalidResponseError`.
