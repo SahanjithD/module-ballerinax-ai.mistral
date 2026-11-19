@@ -6,7 +6,7 @@
 
 ## Overview
 
-This module provides a generic API for connecting with MistralAI's LLM chat completion models.
+This module provides a generic API for connecting with MistralAI's LLM chat completion models and embedding models.
 
 ## Issues and projects
 
